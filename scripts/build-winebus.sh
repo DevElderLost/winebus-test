@@ -57,9 +57,18 @@ if [ ! -f "$SRC/configure" ]; then
 fi
 chmod +x "$SRC/configure"
 
+log "Preflight: PE cross-compiler (wajib untuk ARM64)"
+for t in clang lld-link llvm-dlltool; do
+  command -v "$t" >/dev/null 2>&1 || die "$t tidak ada di PATH (pasang clang lld llvm)"
+done
+echo 'int main(void){return 0;}' > "$WORK/pe-test.c"
+clang -target aarch64-windows -fuse-ld=lld -Wl,-subsystem:console "$WORK/pe-test.c" -o "$WORK/pe-test.exe" \
+  || die "clang tidak bisa menghasilkan PE aarch64 (-target aarch64-windows -fuse-ld=lld)"
+rm -f "$WORK/pe-test.c" "$WORK/pe-test.exe"
+
 log "configure (hanya yang dibutuhkan winebus)"
 cd "$BLD"
-"$SRC/configure" --without-mingw --disable-tests \
+"$SRC/configure" --disable-tests \
   --without-x --without-freetype --without-gnutls --without-pulse --without-alsa --without-oss \
   --without-vulkan --without-wayland --without-opengl --without-osmesa --without-cups \
   --without-sane --without-gphoto --without-gstreamer --without-v4l2 --without-usb \
@@ -67,6 +76,8 @@ cd "$BLD"
   --without-unwind --without-dbus --without-pcsclite --without-ffmpeg --without-opencl \
   2>&1 | tee "$WORK/configure.log"
 
+grep -q "^aarch64_TARGET\|^PE_ARCHS" "$BLD/Makefile" 2>/dev/null \
+  || echo "peringatan: PE_ARCHS tidak terlihat di Makefile, cek $WORK/configure.log"
 CFG="$BLD/include/config.h"
 log "Flag terkait di config.h"
 grep -E 'UDEV|SDL|HIDRAW|INOTIFY|LINUX_INPUT' "$CFG" | tee "$WORK/config-flags.txt" || true
