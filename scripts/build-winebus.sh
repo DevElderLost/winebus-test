@@ -47,6 +47,16 @@ log "Opsi/env yang dibaca winebus di source ini (acuan untuk registry & env)"
   grep -n -E 'getenv\("' "$SRC"/dlls/winebus.sys/*.c || true
 } | tee "$WORK/bus-options.txt"
 
+if [ ! -f "$SRC/configure" ]; then
+  log "configure tidak ada di repo (fork Valve men-generate-nya saat build): jalankan autoreconf"
+  (
+    cd "$SRC"
+    autoreconf -f || { autoconf -f && autoheader -f; }
+  ) || die "autoreconf gagal; cek log di atas"
+  [ -f "$SRC/configure" ] || die "configure masih tidak ada setelah autoreconf"
+fi
+chmod +x "$SRC/configure"
+
 log "configure (hanya yang dibutuhkan winebus)"
 cd "$BLD"
 "$SRC/configure" --without-mingw --disable-tests \

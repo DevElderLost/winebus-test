@@ -5,7 +5,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 apt-get install -y --no-install-recommends \
-  build-essential git ca-certificates flex bison pkg-config \
+  build-essential git ca-certificates flex bison pkg-config autoconf automake \
   libudev-dev libsdl2-dev linux-libc-dev binutils file patch
 
 exec bash "$(dirname "${BASH_SOURCE[0]}")/build-winebus.sh"
