@@ -4,48 +4,79 @@ on:
   workflow_dispatch:
     inputs:
       wine_repo:
-        description: "URL git source Wine (harus fork/versi yang sama dengan Wine di Winlator)"
+        description: "URL git source Wine (antarmuka winebus harus sama dengan Wine di Winlator)"
         required: true
         default: "https://github.com/ValveSoftware/wine.git"
       wine_ref:
-        description: "Tag / branch / commit SHA (harus sama persis dengan Wine di Winlator)"
+        description: "Tag / branch / commit SHA source Wine"
         required: true
         default: "proton_9.0"
-      base_image:
-        description: "Image container build (glibc lebih rendah = lebih kompatibel dengan rootfs Winlator)"
+      android_api:
+        description: "Level API Android target (NDK clang aarch64-linux-androidNN)"
         required: true
-        type: choice
-        default: "ubuntu:22.04"
-        options:
-          - "ubuntu:22.04"
-          - "debian:bookworm"
-          - "ubuntu:24.04"
+        default: "28"
+      sdl_soname:
+        description: "Nama file SDL2 yang di-dlopen di Winlator (samakan dengan winebus.so asli)"
+        required: true
+        default: "libSDL2-2.0.so"
+      runpath:
+        description: "RUNPATH winebus.so (samakan dengan winebus.so asli)"
+        required: true
+        default: "/data/data/com.winlator.cmod/files/imagefs/usr/lib"
+      sdl_ref:
+        description: "Tag SDL2 untuk header (hanya header, SDL tidak ikut ter-link)"
+        required: true
+        default: "release-2.30.9"
+      udev_ref:
+        description: "Tag libudev-zero (di-link statis ke winebus.so)"
+        required: true
+        default: "1.0.3"
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    # NDK resmi hanya untuk host x86_64; hasilnya tetap binary aarch64 (cross-compile)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build winebus.so (di dalam container)
+      - name: Cari Android NDK bawaan runner
+        id: ndk
+        run: |
+          for v in ANDROID_NDK_LATEST_HOME ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_NDK; do
+            d="${!v:-}"
+            if [ -n "$d" ] && [ -d "$d/toolchains/llvm/prebuilt/linux-x86_64" ]; then
+              echo "dir=$d" >> "$GITHUB_OUTPUT"
+              echo "NDK ditemukan: $d"
+              exit 0
+            fi
+          done
+          echo "dir=" >> "$GITHUB_OUTPUT"
+          echo "NDK bawaan tidak ada, pasang lewat setup-ndk"
+
+      - name: Pasang NDK (cadangan)
+        id: setup_ndk
+        if: steps.ndk.outputs.dir == ''
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      - name: Build winebus.so (NDK, bionic)
         env:
           WINE_REPO: ${{ inputs.wine_repo }}
           WINE_REF: ${{ inputs.wine_ref }}
-          BASE_IMAGE: ${{ inputs.base_image }}
-        run: |
-          docker run --rm \
-            -e WINE_REPO -e WINE_REF \
-            -v "$PWD:/w" -w /w \
-            "$BASE_IMAGE" bash scripts/in-container.sh
-
-      - name: Perbaiki kepemilikan out/ (dibuat root oleh container)
-        run: sudo chown -R "$(id -u):$(id -g)" out work 2>/dev/null || sudo chown -R "$(id -u):$(id -g)" out
+          ANDROID_API: ${{ inputs.android_api }}
+          SDL_SONAME: ${{ inputs.sdl_soname }}
+          WINEBUS_RUNPATH: ${{ inputs.runpath }}
+          SDL_REF: ${{ inputs.sdl_ref }}
+          UDEV_REF: ${{ inputs.udev_ref }}
+          ANDROID_NDK_DIR: ${{ steps.ndk.outputs.dir || steps.setup_ndk.outputs.ndk-path }}
+        run: python3 scripts/build_winebus_ndk.py --out out --work work
 
       - name: Verifikasi hasil
-        run: bash scripts/verify-winebus.sh out/winebus.so
+        run: python3 scripts/verify_winebus_ndk.py out/winebus.so
 
       - uses: actions/upload-artifact@v4
         with:
-          name: winebus-udev-aarch64
+          name: winebus-udev-aarch64-bionic
           path: out/*
