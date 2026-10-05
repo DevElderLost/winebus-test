@@ -1,0 +1,53 @@
+name: build-winebus-udev
+
+on:
+  workflow_dispatch:
+    inputs:
+      wine_repo:
+        description: "URL git source Wine (harus fork/versi yang sama dengan Wine di Winlator)"
+        required: true
+        default: "https://github.com/ValveSoftware/wine.git"
+      wine_ref:
+        description: "Tag / branch / commit SHA (harus sama persis dengan Wine di Winlator)"
+        required: true
+        default: "proton_9.0"
+      base_image:
+        description: "Image container build (glibc lebih rendah = lebih kompatibel dengan rootfs Winlator)"
+        required: true
+        type: choice
+        default: "ubuntu:22.04"
+        options:
+          - "ubuntu:22.04"
+          - "debian:bookworm"
+          - "ubuntu:24.04"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build winebus.so (di dalam container)
+        env:
+          WINE_REPO: ${{ inputs.wine_repo }}
+          WINE_REF: ${{ inputs.wine_ref }}
+          BASE_IMAGE: ${{ inputs.base_image }}
+        run: |
+          docker run --rm \
+            -e WINE_REPO -e WINE_REF \
+            -v "$PWD:/w" -w /w \
+            "$BASE_IMAGE" bash scripts/in-container.sh
+
+      - name: Verifikasi hasil
+        run: bash scripts/verify-winebus.sh out/winebus.so
+
+      - name: Kemas
+        run: |
+          cd out
+          tar -czf winebus-udev-aarch64.tar.gz winebus.so libudev.so.1* BUILDINFO.txt bus-options.txt config-flags.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winebus-udev-aarch64
+          path: out/*

@@ -1,0 +1,9 @@
+Windows Registry Editor Version 5.00
+
+; Contoh konfigurasi winebus untuk Android/Winlator. NAMA NILAI HARUS DICOCOKKAN dengan
+; out/bus-options.txt (dibuat build dari source Wine yang kamu pakai). Hapus baris yang namanya tidak ada di sana.
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\winebus]
+; Lewati udevd/netlink (di Android socket netlink uevent biasanya ditolak SELinux): pakai scan direktori + inotify.
+"DisableUdevd"=dword:00000001
+; Biarkan SDL yang menangani evdev; backend udev hanya untuk hidraw (hindari gamepad dobel).
+"DisableInput"=dword:00000001
