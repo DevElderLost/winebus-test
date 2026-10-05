@@ -62,9 +62,13 @@ for t in clang lld-link llvm-dlltool; do
   command -v "$t" >/dev/null 2>&1 || die "$t tidak ada di PATH (pasang clang lld llvm)"
 done
 printf 'void *__os_arm64x_dispatch_ret = 0;\nint __cdecl mainCRTStartup(void) { return 0; }\n' > "$WORK/pe-test.c"
-clang -target aarch64-windows -fuse-ld=lld -Wl,-subsystem:console --no-default-config -nostdlib -nodefaultlibs \
-  "$WORK/pe-test.c" -o "$WORK/pe-test.exe" \
-  || die "clang tidak bisa menghasilkan PE aarch64 (-target aarch64-windows -fuse-ld=lld)"
+# meniru cek Wine: coba dengan --no-default-config (clang >= 16), fallback tanpa (clang 14 tidak mengenalnya)
+PE_OK=0
+for extra in "--no-default-config" ""; do
+  if clang -target aarch64-windows -fuse-ld=lld -Wl,-subsystem:console $extra -nostdlib -nodefaultlibs \
+       "$WORK/pe-test.c" -o "$WORK/pe-test.exe" 2>"$WORK/pe-test.err"; then PE_OK=1; break; fi
+done
+[ "$PE_OK" = 1 ] || { cat "$WORK/pe-test.err" >&2; die "clang tidak bisa menghasilkan PE aarch64 (-target aarch64-windows -fuse-ld=lld)"; }
 rm -f "$WORK/pe-test.c" "$WORK/pe-test.exe"
 
 log "configure (hanya yang dibutuhkan winebus)"
