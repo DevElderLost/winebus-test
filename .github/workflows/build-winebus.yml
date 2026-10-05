@@ -39,13 +39,11 @@ jobs:
             -v "$PWD:/w" -w /w \
             "$BASE_IMAGE" bash scripts/in-container.sh
 
+      - name: Perbaiki kepemilikan out/ (dibuat root oleh container)
+        run: sudo chown -R "$(id -u):$(id -g)" out work 2>/dev/null || sudo chown -R "$(id -u):$(id -g)" out
+
       - name: Verifikasi hasil
         run: bash scripts/verify-winebus.sh out/winebus.so
-
-      - name: Kemas
-        run: |
-          cd out
-          tar -czf winebus-udev-aarch64.tar.gz winebus.so libudev.so.1* BUILDINFO.txt bus-options.txt config-flags.txt
 
       - uses: actions/upload-artifact@v4
         with:
