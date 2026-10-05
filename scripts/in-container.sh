@@ -6,7 +6,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
   build-essential git ca-certificates flex bison pkg-config autoconf automake \
-  libudev-dev libsdl2-dev linux-libc-dev binutils file patch \
+  libudev-dev libsdl2-dev linux-libc-dev binutils file patch python3 perl \
   clang lld llvm
 
 # configure Wine mencari nama tool TANPA versi; di Ubuntu/Debian namanya ber-versi (-14, -18, dst)

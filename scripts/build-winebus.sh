@@ -57,6 +57,30 @@ if [ ! -f "$SRC/configure" ]; then
 fi
 chmod +x "$SRC/configure"
 
+log "Generate file turunan yang tidak di-commit fork Valve (sebelum configure)"
+(
+  cd "$SRC"
+  # 1) header/thunk Vulkan (dipakai makedep walau --without-vulkan)
+  if [ ! -f include/wine/vulkan.h ] || [ ! -f dlls/winevulkan/vulkan_thunks.c ]; then
+    [ -f dlls/winevulkan/make_vulkan ] || { echo "make_vulkan tidak ada" >&2; exit 1; }
+    if [ -f dlls/winevulkan/vk.xml ]; then
+      python3 dlls/winevulkan/make_vulkan -x vk.xml
+    else
+      python3 dlls/winevulkan/make_vulkan
+    fi
+  fi
+  # 2) ntsyscalls.h / win32syscalls.h
+  if [ ! -f dlls/ntdll/ntsyscalls.h ] || [ ! -f dlls/win32u/win32syscalls.h ]; then
+    perl tools/make_specfiles
+  fi
+  # 3) protokol server (sinkronkan dengan server/protocol.def; no-op jika sudah sinkron)
+  perl tools/make_requests
+) || die "generate file turunan gagal; cek log di atas"
+for f in include/wine/vulkan.h include/wine/vulkan_driver.h dlls/winevulkan/vulkan_thunks.c \
+         dlls/ntdll/ntsyscalls.h dlls/win32u/win32syscalls.h; do
+  [ -s "$SRC/$f" ] || die "file turunan tidak terbentuk: $f"
+done
+
 log "Preflight: PE cross-compiler (wajib untuk ARM64)"
 for t in clang lld-link llvm-dlltool; do
   command -v "$t" >/dev/null 2>&1 || die "$t tidak ada di PATH (pasang clang lld llvm)"
