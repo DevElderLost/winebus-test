@@ -116,13 +116,28 @@ if ! grep -q 'SONAME_LIBSDL2' "$CFG"; then
   [ "${ALLOW_NO_SDL:-0}" = 1 ] || die "SDL2 tidak terdeteksi: build ini akan kehilangan backend SDL (gamepad biasa). Pasang libsdl2-dev atau set ALLOW_NO_SDL=1"
 fi
 
-log "Build winebus.so"
-if ! make -j"$JOBS" dlls/winebus.sys/all; then
-  log "Target tunggal gagal, fallback ke build penuh (lama)"
-  make -j"$JOBS"
+log "Build winebus.so (hanya unix lib; ntdll.so asli tidak dibangun)"
+# winebus.so di-link terhadap dlls/ntdll/ntdll.so, tetapi fork Valve tidak bisa me-link ntdll.so
+# di aarch64 (undefined: set_thread_teb, xstate_*). Simbol ntdll baru dibutuhkan saat runtime di Wine,
+# jadi cukup stub kosong ber-soname ntdll.so agar NEEDED tercatat persis seperti build asli.
+mkdir -p dlls/ntdll
+echo 'int __ntdll_stub;' | gcc -x c - -shared -nostdlib -Wl,-soname,ntdll.so -o dlls/ntdll/ntdll.so \
+  || die "gagal membuat stub ntdll.so"
+MK_CC="$(sed -n 's/^CC *= *//p' Makefile | head -n1)"
+MK_LD="$(sed -n 's/^LDFLAGS *= *//p' Makefile | head -n1)"
+make -j"$JOBS" -o dlls/ntdll/ntdll.so \
+  CC="${MK_CC:-gcc} -Wl,--no-as-needed" LDFLAGS="$MK_LD -Wl,-z,undefs" \
+  dlls/winebus.sys/winebus.so 2>&1 | tee "$WORK/make.log" \
+  || true
+if [ ! -f dlls/winebus.sys/winebus.so ]; then
+  echo "---- error pertama di make.log ----" >&2
+  grep -n -m5 -E 'error|Error' "$WORK/make.log" >&2 || tail -n 20 "$WORK/make.log" >&2
+  die "winebus.so tidak terbentuk"
 fi
+readelf -d dlls/winebus.sys/winebus.so | grep -q 'NEEDED.*ntdll.so' \
+  || die "NEEDED ntdll.so tidak tercatat di winebus.so (stub terbuang oleh linker?)"
 
-LIB="$(find "$BLD/dlls/winebus.sys" -maxdepth 1 \( -name winebus.so -o -name winebus.sys.so \) | head -n1)"
+LIB="$(find "$BLD/dlls/winebus.sys" -maxdepth 1 \( -name winebus.so \) | head -n1)"
 [ -n "$LIB" ] || die "winebus.so tidak ditemukan setelah build"
 cp "$LIB" "$OUT/winebus.so"
 strip --strip-unneeded "$OUT/winebus.so"
