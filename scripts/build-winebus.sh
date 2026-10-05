@@ -61,8 +61,9 @@ log "Preflight: PE cross-compiler (wajib untuk ARM64)"
 for t in clang lld-link llvm-dlltool; do
   command -v "$t" >/dev/null 2>&1 || die "$t tidak ada di PATH (pasang clang lld llvm)"
 done
-echo 'int main(void){return 0;}' > "$WORK/pe-test.c"
-clang -target aarch64-windows -fuse-ld=lld -Wl,-subsystem:console "$WORK/pe-test.c" -o "$WORK/pe-test.exe" \
+printf 'void *__os_arm64x_dispatch_ret = 0;\nint __cdecl mainCRTStartup(void) { return 0; }\n' > "$WORK/pe-test.c"
+clang -target aarch64-windows -fuse-ld=lld -Wl,-subsystem:console --no-default-config -nostdlib -nodefaultlibs \
+  "$WORK/pe-test.c" -o "$WORK/pe-test.exe" \
   || die "clang tidak bisa menghasilkan PE aarch64 (-target aarch64-windows -fuse-ld=lld)"
 rm -f "$WORK/pe-test.c" "$WORK/pe-test.exe"
 
