@@ -160,8 +160,11 @@ jobs:
         working-directory: wine-build
         run: |
           set -eo pipefail
-          make -j"$(nproc)" libs/winecrt0/all
-          make -j"$(nproc)" dlls/ntdll/all dlls/kernel32/all dlls/kernelbase/all
+          # lokasi winecrt0 beda antar versi Wine (libs/ atau dlls/), jadi ambil target .a langsung dari Makefile hasil configure
+          targets=$(grep -oE '^(dlls|libs)/(winecrt0|ntdll|kernel32|kernelbase)/[A-Za-z0-9_-]+-windows/[A-Za-z0-9_.]+\.a:' Makefile | tr -d ':' | sort -u)
+          echo "$targets"
+          echo "$targets" | grep -q winecrt0 || { echo "target libwinecrt0.a tidak ditemukan di Makefile"; exit 1; }
+          make -j"$(nproc)" $targets
 
       - name: Build setupapi.dll dan cfgmgr32.dll
         working-directory: wine-build
