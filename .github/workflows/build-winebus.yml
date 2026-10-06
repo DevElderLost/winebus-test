@@ -249,6 +249,18 @@ jobs:
           # sebagai ARM64EC. Job tetap gagal; langkah kumpul/upload di bawah tetap jalan agar log/artefak parsial bisa diperiksa.
           if [ -n "$failed" ]; then echo "::error::build PE gagal untuk:$failed"; exit 1; fi
 
+      # DLL asli Wine/Winlator di aarch64-windows berformat ARM64X (ARM64 + ARM64EC + thunk X64 dalam satu file,
+      # Machine 0xA64E). Wine hanya membuat aarch64-windows (ARM64 murni) dan arm64ec-windows (ARM64EC murni) terpisah,
+      # jadi keduanya ditautkan ulang dengan lld-link /machine:arm64x supaya formatnya sama dengan file asli.
+      - name: Tautkan ARM64X (format sama dengan DLL asli)
+        if: ${{ !cancelled() && contains(inputs.setupapi_archs, 'arm64ec') && contains(inputs.setupapi_archs, 'aarch64') }}
+        working-directory: wine-build
+        run: |
+          set -eo pipefail
+          for dll in setupapi cfgmgr32; do
+            python3 ../scripts/link_arm64x.py --dll "$dll" --build-dir . --out "../arm64x-out/aarch64-windows/$dll.dll"
+          done
+
       - name: Kumpulkan hasil
         if: ${{ !cancelled() }}
         run: |
@@ -256,10 +268,15 @@ jobs:
           cd wine-build
           find dlls/setupapi dlls/cfgmgr32 \( -name setupapi.dll -o -name cfgmgr32.dll \) -type f | while read -r f; do
             d="../out-setupapi/$(basename "$(dirname "$f")")"
+            # bila ARM64X berhasil dibuat, DLL mentah aarch64 (ARM64 murni) dan arm64ec (ARM64EC murni) tidak ikut dipaket
+            if [ -d ../arm64x-out/aarch64-windows ]; then
+              case "$(basename "$(dirname "$f")")" in aarch64-windows|arm64ec-windows) continue ;; esac
+            fi
             mkdir -p "$d"
             cp "$f" "$d/"
           done
           cd ..
+          if [ -d arm64x-out/aarch64-windows ]; then mkdir -p out-setupapi/aarch64-windows && cp arm64x-out/aarch64-windows/*.dll out-setupapi/aarch64-windows/; fi
           {
             echo "wine_repo=${{ inputs.wine_repo }}"
             echo "wine_ref=${{ inputs.wine_ref }}"
@@ -281,9 +298,9 @@ jobs:
             test "$n" -ge 8
           done
 
-      # Pastikan isi tiap folder sesuai namanya. Folder aarch64-windows = ARM64 biasa (BUKAN ARM64EC);
-      # ARM64EC hanya ada di arm64ec-windows (Machine ARM64EC + CHPE metadata).
-      - name: Verifikasi arsitektur PE (arm64ec vs arm64)
+      # Pastikan format tiap DLL sama dengan DLL asli Wine: aarch64-windows = ARM64X (CodeMap ARM64 + ARM64EC + X64),
+      # i386-windows = x86. ARM64 murni (0xAA64) atau ARM64EC murni di aarch64-windows dianggap SALAH.
+      - name: Verifikasi format PE (ARM64X seperti file asli)
         if: ${{ !cancelled() }}
         run: |
           set -eo pipefail
@@ -292,15 +309,19 @@ jobs:
             dir=$(basename "$(dirname "$f")")
             m=$(llvm-readobj --file-headers "$f" | sed -n 's/.*Machine: \(IMAGE_FILE_MACHINE_[A-Z0-9_]*\).*/\1/p' | head -1)
             case "$dir" in
+              aarch64-windows) want=IMAGE_FILE_MACHINE_ARM64X ;;
               arm64ec-windows) want=IMAGE_FILE_MACHINE_ARM64EC ;;
-              aarch64-windows) want=IMAGE_FILE_MACHINE_ARM64 ;;
               i386-windows)    want=IMAGE_FILE_MACHINE_I386 ;;
               *) want="" ;;
             esac
             if [ -n "$want" ] && [ "$m" != "$want" ]; then echo "SALAH  $f: $m (harusnya $want)"; bad=1; else echo "OK     $f: $m"; fi
+            if [ "$dir" = aarch64-windows ]; then
+              cm=$(llvm-readobj --coff-load-config "$f" | sed -n '/CodeMap \[/,/\]/p' | head -8)
+              for k in ARM64 ARM64EC X64; do echo "$cm" | grep -qE "[0-9A-Fa-f] +$k\$" || { echo "SALAH  $f: CodeMap tanpa $k"; bad=1; }; done
+            fi
           done
           case "${{ inputs.setupapi_archs }}" in
-            *arm64ec*) test -f out-setupapi/arm64ec-windows/setupapi.dll || { echo "::error::arm64ec-windows/setupapi.dll tidak ada"; bad=1; } ;;
+            *arm64ec*) test -f out-setupapi/aarch64-windows/setupapi.dll || { echo "::error::aarch64-windows/setupapi.dll (ARM64X) tidak ada"; bad=1; } ;;
           esac
           exit $bad
 
