@@ -41,9 +41,9 @@ on:
         required: true
         default: "arm64ec,aarch64,i386"
       llvm_mingw_tag:
-        description: "Rilis llvm-mingw (mstorsjo/llvm-mingw) untuk kompiler PE"
+        description: "Rilis llvm-mingw (mstorsjo/llvm-mingw) untuk kompiler PE. Source Wine 9.0 (Valve proton_9.0) dibuat untuk LLVM 17 -> 20231128; lld 19 (20241030) gagal me-resolve stub ARM64EC"
         required: true
-        default: "20241030"
+        default: "20231128"
 
 jobs:
   build:
@@ -118,10 +118,12 @@ jobs:
           # tanpanya seluruh isi libwinecrt0.a / import lib diabaikan (DllMainCRTStartup, __wine_stub_* "undefined").
           # llvm-ar di Linux default-nya format GNU (tanpa EC map), jadi paksa --format=coff khusus arsip target Windows.
           mkdir -p "$HOME/ar-shim"
+          # llvm-ar lama (LLVM 17) belum punya --format=coff dan lld lama tidak memakai EC map; pakai opsi itu hanya bila didukung
+          if "$HOME/llvm-mingw/bin/llvm-ar" --help 2>&1 | grep -q "coff"; then COFF="--format=coff"; else COFF=""; fi
           cat > "$HOME/ar-shim/ar" <<EOF
           #!/bin/sh
           case "\$*" in
-            *-windows/*) exec "$HOME/llvm-mingw/bin/llvm-ar" --format=coff "\$@" ;;
+            *-windows/*) exec "$HOME/llvm-mingw/bin/llvm-ar" $COFF "\$@" ;;
             *) exec "$HOME/llvm-mingw/bin/llvm-ar" "\$@" ;;
           esac
           EOF
@@ -181,9 +183,8 @@ jobs:
           make -j"$(nproc)" $targets
           echo "ar yang dipakai: $(command -v ar) -> $(readlink -f "$(command -v ar)")"
           llvm-nm --print-armap dlls/winecrt0/arm64ec-windows/libwinecrt0.a | grep -E "DllMainCRTStartup|__delayLoadHelper2" || true
-          grep -qa "ECSYMBOLS" dlls/winecrt0/arm64ec-windows/libwinecrt0.a \
-            || { echo "libwinecrt0.a arm64ec TIDAK punya EC symbol map (/<ECSYMBOLS>/); lld-link akan mengabaikannya"; exit 1; }
-          echo "EC symbol map: ada"
+          if grep -qa "ECSYMBOLS" dlls/winecrt0/arm64ec-windows/libwinecrt0.a; then echo "EC symbol map: ada"; else echo "EC symbol map: tidak ada (wajar untuk LLVM 17: lld lama memakai armap biasa)"; fi
+          clang --version | head -1
           # diagnostik: di mana __wine_spec_unimplemented_stub didefinisikan (nama polos vs berawalan #) pada tiap arsip
           for a in arm64ec aarch64 i386; do
             echo "== $a: libwinecrt0.a"
