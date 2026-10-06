@@ -114,11 +114,18 @@ jobs:
           mkdir -p "$HOME/llvm-mingw"
           tar -xJf llvm-mingw.tar.xz -C "$HOME/llvm-mingw" --strip-components=1
           echo "$HOME/llvm-mingw/bin" >> "$GITHUB_PATH"
-          # winebuild --staticlib memanggil `ar`. ar GNU tidak membuat EC symbol map yang diwajibkan lld-link
-          # untuk arsip ARM64EC (libwinecrt0.a, import lib), akibatnya DllMainCRTStartup / __wine_stub_* "undefined".
-          # Arahkan ar/ranlib ke versi LLVM, dan taruh paling depan di PATH.
+          # winebuild --staticlib memanggil `ar`. lld-link WAJIB punya EC symbol map (/<ECSYMBOLS>/) di arsip ARM64EC;
+          # tanpanya seluruh isi libwinecrt0.a / import lib diabaikan (DllMainCRTStartup, __wine_stub_* "undefined").
+          # llvm-ar di Linux default-nya format GNU (tanpa EC map), jadi paksa --format=coff khusus arsip target Windows.
           mkdir -p "$HOME/ar-shim"
-          ln -sf "$HOME/llvm-mingw/bin/llvm-ar" "$HOME/ar-shim/ar"
+          cat > "$HOME/ar-shim/ar" <<EOF
+          #!/bin/sh
+          case "\$*" in
+            *-windows/*) exec "$HOME/llvm-mingw/bin/llvm-ar" --format=coff "\$@" ;;
+            *) exec "$HOME/llvm-mingw/bin/llvm-ar" "\$@" ;;
+          esac
+          EOF
+          chmod +x "$HOME/ar-shim/ar"
           ln -sf "$HOME/llvm-mingw/bin/llvm-ranlib" "$HOME/ar-shim/ranlib"
           echo "$HOME/ar-shim" >> "$GITHUB_PATH"
 
@@ -174,6 +181,9 @@ jobs:
           make -j"$(nproc)" $targets
           echo "ar yang dipakai: $(command -v ar) -> $(readlink -f "$(command -v ar)")"
           llvm-nm --print-armap dlls/winecrt0/arm64ec-windows/libwinecrt0.a | grep -E "DllMainCRTStartup|__delayLoadHelper2" || true
+          grep -qa "ECSYMBOLS" dlls/winecrt0/arm64ec-windows/libwinecrt0.a \
+            || { echo "libwinecrt0.a arm64ec TIDAK punya EC symbol map (/<ECSYMBOLS>/); lld-link akan mengabaikannya"; exit 1; }
+          echo "EC symbol map: ada"
 
       - name: Build setupapi.dll dan cfgmgr32.dll
         working-directory: wine-build
