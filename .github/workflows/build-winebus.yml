@@ -105,7 +105,7 @@ jobs:
       - name: Pasang dependensi build Wine
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bison flex gettext pkg-config make git xz-utils ca-certificates python3
+          sudo apt-get install -y --no-install-recommends bison flex gettext pkg-config make git xz-utils ca-certificates python3 autoconf
 
       - name: Pasang llvm-mingw (aarch64 host)
         run: |
@@ -128,10 +128,15 @@ jobs:
         run: python3 scripts/patch_setupapi_cfgmgr.py wine-src
 
       - name: Configure Wine
-        working-directory: wine-src
         run: |
-          mkdir -p ../wine-build
-          cd ../wine-build
+          set -eo pipefail
+          # repo Wine (mis. Valve) tidak menyimpan ./configure hasil generate: buat dulu
+          if [ ! -x wine-src/configure ]; then
+            (cd wine-src && autoreconf -fi)
+          fi
+          test -x wine-src/configure
+          mkdir -p wine-build
+          cd wine-build
           ../wine-src/configure --enable-archs="${{ inputs.setupapi_archs }}" --with-mingw=clang \
             --disable-tests --disable-win16 --without-x --without-freetype --without-alsa --without-pulse \
             --without-oss --without-gstreamer --without-sdl --without-udev --without-usb --without-v4l2 \
@@ -141,6 +146,7 @@ jobs:
       - name: Build setupapi.dll dan cfgmgr32.dll
         working-directory: wine-build
         run: |
+          set -eo pipefail
           make -j"$(nproc)" dlls/setupapi/all dlls/cfgmgr32/all || make -j"$(nproc)"
 
       - name: Kumpulkan hasil
