@@ -152,11 +152,24 @@ jobs:
         working-directory: wine-build
         run: make -j"$(nproc)" tools
 
+      # cfgmgr32.dll hanya berisi spec (stub + forward), tanpa source C. Link-nya butuh libwinecrt0.a
+      # (DllMainCRTStartup, __wine_spec_unimplemented_stub) dan import lib ntdll untuk SEMUA arsitektur PE.
+      # Target `dlls/cfgmgr32/all` sendiri tidak menarik dependensi itu, jadi tanpa langkah ini lld-link gagal:
+      #   undefined symbol: DllMainCRTStartup / #__wine_spec_unimplemented_stub / __wine_stub_CM_*
+      - name: Build runtime PE (winecrt0 + import lib dasar)
+        working-directory: wine-build
+        run: |
+          set -eo pipefail
+          make -j"$(nproc)" libs/winecrt0/all
+          make -j"$(nproc)" dlls/ntdll/all dlls/kernel32/all dlls/kernelbase/all
+
       - name: Build setupapi.dll dan cfgmgr32.dll
         working-directory: wine-build
         run: |
           set -eo pipefail
-          make -j"$(nproc)" dlls/setupapi/all dlls/cfgmgr32/all
+          # setupapi dulu (cfgmgr32 meneruskan ekspor ke setupapi), lalu cfgmgr32; berurutan agar tidak balapan
+          make -j"$(nproc)" dlls/setupapi/all
+          make -j"$(nproc)" dlls/cfgmgr32/all
 
       - name: Kumpulkan hasil
         run: |
