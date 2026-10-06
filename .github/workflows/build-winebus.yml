@@ -203,9 +203,23 @@ jobs:
         working-directory: wine-build
         run: |
           set -eo pipefail
-          # setupapi dulu (cfgmgr32 meneruskan ekspor ke setupapi), lalu cfgmgr32; berurutan agar tidak balapan
-          make -j"$(nproc)" dlls/setupapi/all
-          make -j"$(nproc)" dlls/cfgmgr32/all
+          # Build per arsitektur: kegagalan satu arsitektur (mis. arm64ec) tidak menutupi hasil arsitektur lain.
+          # setupapi dulu (cfgmgr32 meneruskan ekspor ke setupapi), lalu cfgmgr32.
+          failed=""
+          for arch in $(echo "${{ inputs.setupapi_archs }}" | tr ',' ' '); do
+            echo "::group::Build $arch"
+            if make -j"$(nproc)" "dlls/setupapi/$arch-windows/setupapi.dll" \
+               && make -j"$(nproc)" "dlls/cfgmgr32/$arch-windows/cfgmgr32.dll"; then
+              echo "== $arch: OK"
+            else
+              echo "== $arch: GAGAL"
+              echo "::warning::build PE $arch gagal (lihat grup 'Build $arch'); arsitektur lain tetap diproses"
+              failed="$failed $arch"
+            fi
+            echo "::endgroup::"
+          done
+          echo "SETUPAPI_FAILED=${failed# }" >> "$GITHUB_ENV"
+          test -n "$(find dlls/setupapi -name setupapi.dll)" || { echo "tidak ada arsitektur yang berhasil dibuild"; exit 1; }
 
       - name: Kumpulkan hasil
         run: |
@@ -223,6 +237,7 @@ jobs:
             echo "wine_commit=$WINE_COMMIT"
             echo "archs=${{ inputs.setupapi_archs }}"
             echo "llvm_mingw=${{ inputs.llvm_mingw_tag }}"
+            echo "arsitektur_gagal=${SETUPAPI_FAILED:-tidak ada}"
             (cd out-setupapi && find . -type f -exec sha256sum {} \;)
           } > out-setupapi/BUILDINFO.txt
           cat out-setupapi/BUILDINFO.txt
