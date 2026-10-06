@@ -114,6 +114,13 @@ jobs:
           mkdir -p "$HOME/llvm-mingw"
           tar -xJf llvm-mingw.tar.xz -C "$HOME/llvm-mingw" --strip-components=1
           echo "$HOME/llvm-mingw/bin" >> "$GITHUB_PATH"
+          # winebuild --staticlib memanggil `ar`. ar GNU tidak membuat EC symbol map yang diwajibkan lld-link
+          # untuk arsip ARM64EC (libwinecrt0.a, import lib), akibatnya DllMainCRTStartup / __wine_stub_* "undefined".
+          # Arahkan ar/ranlib ke versi LLVM, dan taruh paling depan di PATH.
+          mkdir -p "$HOME/ar-shim"
+          ln -sf "$HOME/llvm-mingw/bin/llvm-ar" "$HOME/ar-shim/ar"
+          ln -sf "$HOME/llvm-mingw/bin/llvm-ranlib" "$HOME/ar-shim/ranlib"
+          echo "$HOME/ar-shim" >> "$GITHUB_PATH"
 
       - name: Ambil source Wine (repo/ref yang sama dengan winebus)
         run: |
@@ -165,6 +172,8 @@ jobs:
           echo "$targets"
           echo "$targets" | grep -q winecrt0 || { echo "target libwinecrt0.a tidak ditemukan di Makefile"; exit 1; }
           make -j"$(nproc)" $targets
+          echo "ar yang dipakai: $(command -v ar) -> $(readlink -f "$(command -v ar)")"
+          llvm-nm --print-armap dlls/winecrt0/arm64ec-windows/libwinecrt0.a | grep -E "DllMainCRTStartup|__delayLoadHelper2" || true
 
       - name: Build setupapi.dll dan cfgmgr32.dll
         working-directory: wine-build
