@@ -164,17 +164,35 @@ jobs:
             (cd wine-src && if [ -x ./autogen.sh ]; then ./autogen.sh; else autoreconf -fi; fi)
           fi
           test -x wine-src/configure
+          # Probe configure memakai `-Wl,-WX` (peringatan linker = error). lld dari LLVM 20 mengeluarkan peringatan khusus ARM64EC
+          # pada program uji kosong, sehingga deteksi kompiler gagal ("MinGW arm64ec compiler not found") padahal toolchain-nya
+          # sehat. -WX hanya pengetat, jadi dibuang dari configure.ac dan configure hasil generate.
+          sed -i 's/[ ]*-Wl,-WX//g' wine-src/configure.ac wine-src/configure
           # file Vulkan hasil generate (include/wine/vulkan.h, vulkan-1.spec, dst.) tidak disimpan di repo Valve
           if [ ! -f wine-src/include/wine/vulkan.h ] && [ -f wine-src/dlls/winevulkan/make_vulkan ]; then
             (cd wine-src/dlls/winevulkan && python3 make_vulkan -x vk.xml)
           fi
           mkdir -p wine-build
           cd wine-build
-          ../wine-src/configure --enable-archs="${{ inputs.setupapi_archs }}" --with-mingw=clang \
-            --disable-tests --disable-win16 --without-x --without-freetype --without-alsa --without-pulse \
-            --without-oss --without-gstreamer --without-sdl --without-udev --without-usb --without-v4l2 \
-            --without-wayland --without-vulkan --without-cups --without-sane --without-gphoto --without-pcap \
-            2>&1 | tee configure.log
+          conf_args=(--enable-archs="${{ inputs.setupapi_archs }}" --with-mingw=clang
+            --disable-tests --disable-win16 --without-x --without-freetype --without-alsa --without-pulse
+            --without-oss --without-gstreamer --without-sdl --without-udev --without-usb --without-v4l2
+            --without-wayland --without-vulkan --without-cups --without-sane --without-gphoto --without-pcap)
+          if ! ../wine-src/configure "${conf_args[@]}" 2>&1 | tee configure.log; then
+            # tampilkan galat asli probe kompiler PE (config.log tidak ikut ke log langkah)
+            echo "::group::config.log - probe kompiler PE arm64ec"
+            grep -n -B2 -A20 -- '-target arm64ec-windows' config.log | head -200 || true
+            echo "::endgroup::"
+            # fallback: probe arm64ec yang gagal dipaksa lolos. Kalau toolchain benar-benar rusak, galatnya muncul jelas
+            # di langkah build berikutnya, dan verifikasi arsitektur PE di akhir tetap menolak DLL yang salah.
+            forced=$(sed -n -E "s/^(ac_cv_[A-Za-z0-9_]*arm64ec[A-Za-z0-9_]*subsystem[A-Za-z0-9_]*)=['\"]?no['\"]?$/\1/p" config.log | sort -u)
+            test -n "$forced" || { echo "::error::probe kompiler PE gagal dan bukan probe arm64ec; lihat config.log di atas"; exit 1; }
+            echo "::warning::probe kompiler arm64ec dipaksa lolos: $forced"
+            env_args=()
+            for v in $forced; do env_args+=("$v=yes"); done
+            rm -f config.status config.log
+            env "${env_args[@]}" ../wine-src/configure "${conf_args[@]}" 2>&1 | tee configure.log
+          fi
 
       - name: Build wine tools (winebuild, winegcc, wrc)
         working-directory: wine-build
