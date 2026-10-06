@@ -41,9 +41,9 @@ on:
         required: true
         default: "arm64ec,aarch64,i386"
       llvm_mingw_tag:
-        description: "Rilis llvm-mingw (mstorsjo/llvm-mingw) untuk kompiler PE (arm64ec butuh LLVM 19: llvm-dlltool LLVM 17/18 tidak mengenal target arm64ec)"
+        description: "Rilis llvm-mingw (mstorsjo/llvm-mingw) untuk kompiler PE. arm64ec WAJIB LLVM >= 20 (20250305 = LLVM 20.1.0): lld 19.x tidak me-resolve import lib/winecrt0 ARM64EC (undefined symbol: DllMainCRTStartup, __imp_*)"
         required: true
-        default: "20241030"
+        default: "20250305"
 
 jobs:
   build:
@@ -130,6 +130,13 @@ jobs:
           chmod +x "$HOME/ar-shim/ar"
           ln -sf "$HOME/llvm-mingw/bin/llvm-ranlib" "$HOME/ar-shim/ranlib"
           echo "$HOME/ar-shim" >> "$GITHUB_PATH"
+          # arm64ec dengan LLVM < 20 gagal di tahap link (lld 19 tidak menemukan simbol di arsip ARM64EC) dan hasilnya hanya
+          # arm64 biasa (aarch64-windows). Gagal lebih awal daripada diam-diam menghasilkan DLL arsitektur yang salah.
+          major=$("$HOME/llvm-mingw/bin/clang" --version | sed -n 's/.*clang version \([0-9]*\)\..*/\1/p' | head -1)
+          echo "clang llvm-mingw: major=$major"
+          case "${{ inputs.setupapi_archs }}" in
+            *arm64ec*) test "${major:-0}" -ge 20 || { echo "::error::arm64ec butuh llvm-mingw dengan LLVM >= 20 (dapat: ${major:-?}). Pakai llvm_mingw_tag >= 20250305."; exit 1; } ;;
+          esac
 
       - name: Ambil source Wine (repo/ref yang sama dengan winebus)
         run: |
@@ -220,8 +227,12 @@ jobs:
           done
           echo "SETUPAPI_FAILED=${failed# }" >> "$GITHUB_ENV"
           test -n "$(find dlls/setupapi -name setupapi.dll)" || { echo "tidak ada arsitektur yang berhasil dibuild"; exit 1; }
+          # Arsitektur yang gagal TIDAK boleh lolos diam-diam: hasil parsial (mis. hanya aarch64) mudah salah dipasang
+          # sebagai ARM64EC. Job tetap gagal; langkah kumpul/upload di bawah tetap jalan agar log/artefak parsial bisa diperiksa.
+          if [ -n "$failed" ]; then echo "::error::build PE gagal untuk:$failed"; exit 1; fi
 
       - name: Kumpulkan hasil
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p out-setupapi
           cd wine-build
@@ -244,6 +255,7 @@ jobs:
           test -n "$(find out-setupapi -name setupapi.dll)" || { echo "setupapi.dll tidak terbentuk"; exit 1; }
 
       - name: Verifikasi ekspor CM_Get_Device_Interface_List*
+        if: ${{ !cancelled() }}
         run: |
           for f in $(find out-setupapi -name setupapi.dll); do
             n=$(llvm-objdump -p "$f" | grep -c "CM_Get_Device_Interface_List")
@@ -251,14 +263,38 @@ jobs:
             test "$n" -ge 8
           done
 
+      # Pastikan isi tiap folder sesuai namanya. Folder aarch64-windows = ARM64 biasa (BUKAN ARM64EC);
+      # ARM64EC hanya ada di arm64ec-windows (Machine ARM64EC + CHPE metadata).
+      - name: Verifikasi arsitektur PE (arm64ec vs arm64)
+        if: ${{ !cancelled() }}
+        run: |
+          set -eo pipefail
+          bad=0
+          for f in $(find out-setupapi -name '*.dll' | sort); do
+            dir=$(basename "$(dirname "$f")")
+            m=$(llvm-readobj --file-headers "$f" | sed -n 's/.*Machine: \(IMAGE_FILE_MACHINE_[A-Z0-9_]*\).*/\1/p' | head -1)
+            case "$dir" in
+              arm64ec-windows) want=IMAGE_FILE_MACHINE_ARM64EC ;;
+              aarch64-windows) want=IMAGE_FILE_MACHINE_ARM64 ;;
+              i386-windows)    want=IMAGE_FILE_MACHINE_I386 ;;
+              *) want="" ;;
+            esac
+            if [ -n "$want" ] && [ "$m" != "$want" ]; then echo "SALAH  $f: $m (harusnya $want)"; bad=1; else echo "OK     $f: $m"; fi
+          done
+          case "${{ inputs.setupapi_archs }}" in
+            *arm64ec*) test -f out-setupapi/arm64ec-windows/setupapi.dll || { echo "::error::arm64ec-windows/setupapi.dll tidak ada"; bad=1; } ;;
+          esac
+          exit $bad
+
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: setupapi-pe
           path: out-setupapi/*
 
   bundle:
     needs: [build, setupapi]
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.setupapi.result == 'success' || needs.setupapi.result == 'skipped') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
