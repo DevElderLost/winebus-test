@@ -8,7 +8,12 @@ Di Wine fungsi-fungsi itu stub (return CR_FAILURE), sehingga HIDAPI tidak menemu
 Perbaikan: enumerasi lewat SetupDiGetClassDevsW + SetupDiEnumDeviceInterfaces + SetupDiGetDeviceInterfaceDetailW
 lalu susun daftar multi-SZ. Yang diubah: dlls/setupapi/stubs.c, dlls/setupapi/setupapi.spec, dlls/cfgmgr32/cfgmgr32.spec.
 
-Pemakaian:  python3 patch_setupapi_cfgmgr.py <folder-source-wine>
+Opsi --convert-stubs (untuk build arm64ec dengan lld 19): semua "@ stub X" di setupapi.spec diganti
+"@ cdecl X() setupapi_unimplemented" (satu handler yang meniru stub asli: RaiseException noncontinuable), dan semua
+"@ stub X" di cfgmgr32.spec diganti forward "setupapi.X". Alasan: stub buatan winebuild Wine 9.0 untuk ARM64EC
+tidak diterima lld 19 (__wine_stub_* dan #__wine_spec_unimplemented_stub "undefined").
+
+Pemakaian:  python3 patch_setupapi_cfgmgr.py <folder-source-wine> [--convert-stubs]
 Idempotent, tanpa file .bak, mencetak status per file dan memverifikasi hasil.
 Bila source Wine sudah mengimplementasikannya (tidak lagi stub), file dilewati tanpa error.
 """
@@ -17,6 +22,18 @@ import sys
 from pathlib import Path
 
 MARK = "DroidDeck-cfgmgr-iflist"
+MARK_STUB = "DroidDeck-stub-handler"
+
+STUB_LINE = re.compile(r"^(\s*(?:@|\d+)\s+)stub((?:\s+-\S+)*)\s+([^\s(]+)\s*$")
+
+STUB_HANDLER = r'''
+/* DroidDeck-stub-handler: pengganti "@ stub" (ARM64EC/lld 19). Perilaku sama dengan stub asli: exception Wine, tidak bisa dilanjutkan. */
+void __cdecl setupapi_unimplemented(void)
+{
+    FIXME( "unimplemented function called\n" );
+    RaiseException( 0x80000100 /* EXCEPTION_WINE_STUB */, EXCEPTION_NONCONTINUABLE, 0, NULL );
+}
+'''
 
 C_BLOCK = r'''
 /* DroidDeck-cfgmgr-iflist: daftar interface perangkat lewat SetupDi*, dipakai HIDAPI/SDL3. */
@@ -239,8 +256,41 @@ def patch_spec(path, table):
     return changed, present
 
 
+def convert_stubs(src, stubs):
+    """Ganti semua '@ stub' di setupapi.spec / cfgmgr32.spec; tambah handler ke stubs.c. Mengembalikan 0 bila sukses."""
+    targets = [
+        (src / "dlls/setupapi/setupapi.spec", lambda m: f"{m.group(1)}cdecl{m.group(2)} {m.group(3)}() setupapi_unimplemented"),
+        (src / "dlls/cfgmgr32/cfgmgr32.spec", lambda m: f"{m.group(1)}stdcall{m.group(2)} {m.group(3)}() setupapi.{m.group(3)}"),
+    ]
+    ok = True
+    for path, repl in targets:
+        lines = path.read_text(encoding="utf-8").split("\n")
+        n = 0
+        for i, line in enumerate(lines):
+            m = STUB_LINE.match(line)
+            if m:
+                lines[i] = repl(m)
+                n += 1
+        if n:
+            path.write_text("\n".join(lines), encoding="utf-8")
+        left = sum(1 for l in lines if re.match(r"^\s*(?:@|\d+)\s+stub\b", l))
+        print(f"[{'DIPATCH' if n else 'SUDAH ADA'}] {path.relative_to(src)}: {n} stub diganti, sisa {left}")
+        ok &= left == 0
+    text = stubs.read_text(encoding="utf-8")
+    if MARK_STUB in text:
+        print(f"[SUDAH ADA] handler stub di {stubs.relative_to(src)}")
+    else:
+        stubs.write_text(text.rstrip("\n") + "\n" + STUB_HANDLER, encoding="utf-8")
+        print(f"[DIPATCH] handler setupapi_unimplemented ditambahkan ke {stubs.relative_to(src)}")
+    ok &= MARK_STUB in stubs.read_text(encoding="utf-8")
+    print(f"[{'OK' if ok else 'GAGAL'}] verifikasi convert-stubs")
+    return 0 if ok else 1
+
+
 def main():
-    src = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
+    convert = "--convert-stubs" in sys.argv
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    src = Path(args[0] if args else ".").resolve()
     stubs = src / "dlls/setupapi/stubs.c"
     specs = [(src / "dlls/setupapi/setupapi.spec", SETUPAPI_SPEC), (src / "dlls/cfgmgr32/cfgmgr32.spec", CFGMGR_SPEC)]
     for p in [stubs] + [s for s, _ in specs]:
@@ -254,7 +304,7 @@ def main():
         print(f"[SUDAH ADA] {stubs.relative_to(src)}")
     elif "CM_Get_Device_Interface_List_SizeW" in text and not OLD_STUB.search(text):
         print(f"[LEWAT] {stubs.relative_to(src)}: tidak lagi berupa stub (kemungkinan sudah diimplementasi upstream)")
-        return 0
+        return convert_stubs(src, stubs) if convert else 0
     else:
         new, n = OLD_STUB.subn("", text)
         if n != 4:
@@ -269,6 +319,9 @@ def main():
         print(f"[{'DIPATCH' if changed else 'SUDAH ADA'}] {path.relative_to(src)} ({changed} baris)")
         ok &= present
 
+    if convert:
+        if convert_stubs(src, stubs):
+            return 1
     final = stubs.read_text(encoding="utf-8")
     checks = {
         "marker": final.count(MARK) == 1,
