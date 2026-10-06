@@ -135,6 +135,10 @@ jobs:
             (cd wine-src && autoreconf -fi)
           fi
           test -x wine-src/configure
+          # file Vulkan hasil generate (include/wine/vulkan.h, vulkan-1.spec, dst.) tidak disimpan di repo Valve
+          if [ ! -f wine-src/include/wine/vulkan.h ] && [ -f wine-src/dlls/winevulkan/make_vulkan ]; then
+            (cd wine-src/dlls/winevulkan && python3 make_vulkan -x vk.xml)
+          fi
           mkdir -p wine-build
           cd wine-build
           ../wine-src/configure --enable-archs="${{ inputs.setupapi_archs }}" --with-mingw=clang \
