@@ -132,7 +132,8 @@ jobs:
           set -eo pipefail
           # repo Wine (mis. Valve) tidak menyimpan ./configure hasil generate: buat dulu
           if [ ! -x wine-src/configure ]; then
-            (cd wine-src && autoreconf -fi)
+            # autogen.sh (Valve) = make_requests + make_vulkan + make_specfiles + autoreconf; fork lain: autoreconf saja
+            (cd wine-src && if [ -x ./autogen.sh ]; then ./autogen.sh; else autoreconf -fi; fi)
           fi
           test -x wine-src/configure
           # file Vulkan hasil generate (include/wine/vulkan.h, vulkan-1.spec, dst.) tidak disimpan di repo Valve
