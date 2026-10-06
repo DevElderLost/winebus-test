@@ -148,11 +148,15 @@ jobs:
             --without-wayland --without-vulkan --without-cups --without-sane --without-gphoto --without-pcap \
             2>&1 | tee configure.log
 
+      - name: Build wine tools (winebuild, winegcc, wrc)
+        working-directory: wine-build
+        run: make -j"$(nproc)" tools
+
       - name: Build setupapi.dll dan cfgmgr32.dll
         working-directory: wine-build
         run: |
           set -eo pipefail
-          make -j"$(nproc)" dlls/setupapi/all dlls/cfgmgr32/all || make -j"$(nproc)"
+          make -j"$(nproc)" dlls/setupapi/all dlls/cfgmgr32/all
 
       - name: Kumpulkan hasil
         run: |
