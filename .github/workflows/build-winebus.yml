@@ -184,6 +184,14 @@ jobs:
           grep -qa "ECSYMBOLS" dlls/winecrt0/arm64ec-windows/libwinecrt0.a \
             || { echo "libwinecrt0.a arm64ec TIDAK punya EC symbol map (/<ECSYMBOLS>/); lld-link akan mengabaikannya"; exit 1; }
           echo "EC symbol map: ada"
+          # diagnostik: di mana __wine_spec_unimplemented_stub didefinisikan (nama polos vs berawalan #) pada tiap arsip
+          for a in arm64ec aarch64 i386; do
+            echo "== $a: libwinecrt0.a"
+            llvm-nm --print-armap "dlls/winecrt0/$a-windows/libwinecrt0.a" 2>&1 | grep -E "unimplemented|ECSYMBOLS|EC map" || echo "(tidak ada baris cocok)"
+            llvm-nm -A --defined-only "dlls/winecrt0/$a-windows/libwinecrt0.a" 2>&1 | grep -E "stub\.o" || true
+          done
+          llvm-ar --version | head -2
+          llvm-ar t dlls/winecrt0/arm64ec-windows/libwinecrt0.a | head -30
 
       - name: Build setupapi.dll dan cfgmgr32.dll
         working-directory: wine-build
