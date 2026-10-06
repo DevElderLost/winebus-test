@@ -31,6 +31,19 @@ on:
         description: "Tag libudev-zero (di-link statis ke winebus.so)"
         required: true
         default: "1.0.3"
+      build_setupapi:
+        description: "Ikut build setupapi.dll + cfgmgr32.dll (patch CM_Get_Device_Interface_List) agar HIDAPI SDL3 melihat hidraw"
+        required: true
+        type: boolean
+        default: true
+      setupapi_archs:
+        description: "--enable-archs untuk build PE (samakan dengan Wine di Winlator; arm64ec butuh llvm-mingw)"
+        required: true
+        default: "arm64ec,aarch64,i386"
+      llvm_mingw_tag:
+        description: "Rilis llvm-mingw (mstorsjo/llvm-mingw) untuk kompiler PE"
+        required: true
+        default: "20241030"
 
 jobs:
   build:
@@ -80,3 +93,99 @@ jobs:
         with:
           name: winebus-udev-aarch64-bionic
           path: out/*
+
+  setupapi:
+    if: ${{ inputs.build_setupapi }}
+    # host aarch64 agar configure Wine arm64ec berjalan natif; hasil PE (setupapi.dll) tidak bergantung host
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pasang dependensi build Wine
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bison flex gettext pkg-config make git xz-utils ca-certificates python3
+
+      - name: Pasang llvm-mingw (aarch64 host)
+        run: |
+          url="https://github.com/mstorsjo/llvm-mingw/releases/download/${{ inputs.llvm_mingw_tag }}/llvm-mingw-${{ inputs.llvm_mingw_tag }}-ucrt-ubuntu-20.04-aarch64.tar.xz"
+          curl -fsSL "$url" -o llvm-mingw.tar.xz
+          mkdir -p "$HOME/llvm-mingw"
+          tar -xJf llvm-mingw.tar.xz -C "$HOME/llvm-mingw" --strip-components=1
+          echo "$HOME/llvm-mingw/bin" >> "$GITHUB_PATH"
+
+      - name: Ambil source Wine (repo/ref yang sama dengan winebus)
+        run: |
+          git init wine-src
+          cd wine-src
+          git remote add origin "${{ inputs.wine_repo }}"
+          git fetch --depth 1 origin "${{ inputs.wine_ref }}"
+          git checkout --detach FETCH_HEAD
+          echo "WINE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Patch setupapi (CM_Get_Device_Interface_List)
+        run: python3 scripts/patch_setupapi_cfgmgr.py wine-src
+
+      - name: Configure Wine
+        working-directory: wine-src
+        run: |
+          mkdir -p ../wine-build
+          cd ../wine-build
+          ../wine-src/configure --enable-archs="${{ inputs.setupapi_archs }}" --with-mingw=clang \
+            --disable-tests --disable-win16 --without-x --without-freetype --without-alsa --without-pulse \
+            --without-oss --without-gstreamer --without-sdl --without-udev --without-usb --without-v4l2 \
+            --without-wayland --without-vulkan --without-cups --without-sane --without-gphoto --without-pcap \
+            2>&1 | tee configure.log
+
+      - name: Build setupapi.dll dan cfgmgr32.dll
+        working-directory: wine-build
+        run: |
+          make -j"$(nproc)" dlls/setupapi/all dlls/cfgmgr32/all || make -j"$(nproc)"
+
+      - name: Kumpulkan hasil
+        run: |
+          mkdir -p out-setupapi
+          cd wine-build
+          find dlls/setupapi dlls/cfgmgr32 \( -name setupapi.dll -o -name cfgmgr32.dll \) -type f | while read -r f; do
+            d="../out-setupapi/$(basename "$(dirname "$f")")"
+            mkdir -p "$d"
+            cp "$f" "$d/"
+          done
+          cd ..
+          {
+            echo "wine_repo=${{ inputs.wine_repo }}"
+            echo "wine_ref=${{ inputs.wine_ref }}"
+            echo "wine_commit=$WINE_COMMIT"
+            echo "archs=${{ inputs.setupapi_archs }}"
+            echo "llvm_mingw=${{ inputs.llvm_mingw_tag }}"
+            (cd out-setupapi && find . -type f -exec sha256sum {} \;)
+          } > out-setupapi/BUILDINFO.txt
+          cat out-setupapi/BUILDINFO.txt
+          test -n "$(find out-setupapi -name setupapi.dll)" || { echo "setupapi.dll tidak terbentuk"; exit 1; }
+
+      - name: Verifikasi ekspor CM_Get_Device_Interface_List*
+        run: |
+          for f in $(find out-setupapi -name setupapi.dll); do
+            n=$(llvm-objdump -p "$f" | grep -c "CM_Get_Device_Interface_List")
+            echo "$f: $n ekspor CM_Get_Device_Interface_List*"
+            test "$n" -ge 8
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setupapi-pe
+          path: out-setupapi/*
+
+  bundle:
+    needs: [build, setupapi]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winebus-setupapi-bundle
+          path: bundle/*

@@ -59,3 +59,16 @@ Repo ini hanya memperbaiki sisi Wine. Agar Deck pad benar-benar ditemukan di And
 Build Wine **penuh** (arm64ec) tidak disediakan di sini: toolchain dan patch arm64ec berbeda per fork, jadi resep CI-nya sebaiknya diambil dari repo yang membuat paket Wine Winlator-mu. Jika perlu, taruh patch `.patch` di `patches/`; akan diterapkan otomatis sebelum build.
 
 Skrip di repo ini ditulis tanpa bisa dijalankan di lingkungan pembuatnya (tanpa akses jaringan). Jalankan workflow sekali dan periksa `configure.log`/hasil verifikasi sebelum memakainya.
+
+## setupapi.dll (CM_Get_Device_Interface_List) — agar SDL3 melihat hidraw
+
+`winebus.so` hanya sisi unix. SDL3 (HIDAPI Windows) mencari perangkat lewat `CM_Get_Device_Interface_List_SizeW`/`ListW`
+di **setupapi.dll** (PE), yang di Wine masih stub, jadi `/dev/hidraw16` tidak pernah dibuka SDL walau winebus sudah benar.
+
+- `scripts/patch_setupapi_cfgmgr.py <source-wine>`: mengimplementasikan 8 fungsi itu (dlls/setupapi/stubs.c) dan memperbarui
+  `setupapi.spec` + `cfgmgr32.spec`. Idempotent, tanpa .bak; dilewati bila upstream sudah mengimplementasikannya.
+- Workflow `build-winebus-udev` punya job `setupapi` (input `build_setupapi`, default true): build PE dengan llvm-mingw,
+  artifact `setupapi-pe` berisi `<arch>-windows/setupapi.dll` dan `cfgmgr32.dll`; artifact `winebus-setupapi-bundle` menggabungkan keduanya.
+- Pasang: ganti `setupapi.dll` (dan `cfgmgr32.dll`) di folder yang sama dengan file aslinya, per arsitektur
+  (mis. `aarch64-windows` untuk ARM64EC, `i386-windows`). Cadangkan dulu. Source Wine harus commit yang sama dengan Wine Winlator.
+
