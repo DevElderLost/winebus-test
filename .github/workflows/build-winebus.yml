@@ -41,9 +41,9 @@ on:
         required: true
         default: "arm64ec,aarch64,i386"
       llvm_mingw_tag:
-        description: "Rilis llvm-mingw (mstorsjo/llvm-mingw) untuk kompiler PE. Source Wine 9.0 (Valve proton_9.0) butuh LLVM 18 (20240619): LLVM 17 (20231128) tidak punya dlltool arm64ec, LLVM 19 (20241030) gagal me-resolve stub ARM64EC"
+        description: "Rilis llvm-mingw (mstorsjo/llvm-mingw) untuk kompiler PE (arm64ec butuh LLVM 19: llvm-dlltool LLVM 17/18 tidak mengenal target arm64ec)"
         required: true
-        default: "20240619"
+        default: "20241030"
 
 jobs:
   build:
@@ -141,7 +141,12 @@ jobs:
           echo "WINE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Patch setupapi (CM_Get_Device_Interface_List)
-        run: python3 scripts/patch_setupapi_cfgmgr.py wine-src
+        run: |
+          # lld 19 menolak stub ARM64EC buatan winebuild Wine 9.0 (__wine_stub_* / #__wine_spec_unimplemented_stub undefined):
+          # untuk arm64ec semua "@ stub" diganti fungsi nyata yang dikompilasi clang
+          flag=""
+          case "${{ inputs.setupapi_archs }}" in *arm64ec*) flag="--convert-stubs" ;; esac
+          python3 scripts/patch_setupapi_cfgmgr.py wine-src $flag
 
       - name: Configure Wine
         run: |
