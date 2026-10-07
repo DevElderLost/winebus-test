@@ -239,6 +239,40 @@ CFGMGR_SPEC = [
 ]
 
 
+def upstream_implemented(src):
+    """True bila Wine/Proton versi ini sudah punya implementasi CM_Get_Device_Interface_List* (bukan stub).
+
+    Wine 9.0 menaruhnya sebagai stub di dlls/setupapi/stubs.c. Di Wine/Proton yang lebih baru fungsinya
+    sudah diimplementasikan upstream (dan/atau dipindah file), jadi stubs.c tidak lagi memuat namanya.
+    Syarat: tidak ada baris '@ stub CM_Get_Device_Interface_List*' di kedua spec DAN ada definisi fungsinya di file .c.
+    """
+    for spec in (src / "dlls/setupapi/setupapi.spec", src / "dlls/cfgmgr32/cfgmgr32.spec"):
+        for line in spec.read_text(encoding="utf-8", errors="replace").split("\n"):
+            if re.match(r"^\s*(?:@|\d+)\s+stub\b.*\bCM_Get_Device_Interface_List", line):
+                return False
+    pat = re.compile(r"^CONFIGRET\s+(?:WINAPI\s+)?CM_Get_Device_Interface_List_?(?:Size)?_?(?:Ex)?W\s*\(", re.M)
+    for d in ("dlls/setupapi", "dlls/cfgmgr32"):
+        for c in sorted((src / d).glob("*.c")):
+            if pat.search(c.read_text(encoding="utf-8", errors="replace")):
+                return True
+    return False
+
+
+def dump_where(src):
+    """Diagnostik bila struktur source tidak dikenali: tunjukkan di mana nama fungsi muncul."""
+    shown = 0
+    for d in ("dlls/setupapi", "dlls/cfgmgr32"):
+        for f in sorted((src / d).glob("*")):
+            if not f.is_file() or f.suffix not in (".c", ".h", ".spec"):
+                continue
+            for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").split("\n"), 1):
+                if "CM_Get_Device_Interface_List" in line and shown < 25:
+                    print(f"    {f.relative_to(src)}:{i}: {line.strip()[:110]}")
+                    shown += 1
+    if not shown:
+        print("    (nama CM_Get_Device_Interface_List* tidak ditemukan di setupapi/cfgmgr32)")
+
+
 def patch_spec(path, table):
     text = path.read_text(encoding="utf-8")
     changed = 0
@@ -305,10 +339,15 @@ def main():
     elif "CM_Get_Device_Interface_List_SizeW" in text and not OLD_STUB.search(text):
         print(f"[LEWAT] {stubs.relative_to(src)}: tidak lagi berupa stub (kemungkinan sudah diimplementasi upstream)")
         return convert_stubs(src, stubs) if convert else 0
+    elif upstream_implemented(src):
+        print(f"[LEWAT] {stubs.relative_to(src)}: Wine ini sudah mengimplementasikan CM_Get_Device_Interface_List* (bukan stub lagi)")
+        return convert_stubs(src, stubs) if convert else 0
     else:
         new, n = OLD_STUB.subn("", text)
         if n != 4:
-            print(f"[GAGAL] {stubs.relative_to(src)}: ditemukan {n} stub List_Size (harus 4)")
+            print(f"[GAGAL] {stubs.relative_to(src)}: ditemukan {n} stub List_Size (harus 4) dan implementasi upstream tidak terdeteksi")
+            print("  Lokasi nama fungsi di source Wine ini:")
+            dump_where(src)
             return 1
         new = new.rstrip("\n") + "\n" + C_BLOCK
         stubs.write_text(new, encoding="utf-8")
