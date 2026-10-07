@@ -36,6 +36,11 @@ on:
         required: true
         type: boolean
         default: true
+      hidclass_queue:
+        description: "Ikut build hidclass.sys yang dipatch: antrean input Steam Deck (VID 28DE) diperkecil dari 32 ke 4 report agar SDL HIDAPI tidak membaca report berumur ~125 ms (delay input hidraw)"
+        required: true
+        type: boolean
+        default: true
       setupapi_archs:
         description: "--enable-archs untuk build PE (samakan dengan Wine di Winlator; arm64ec butuh llvm-mingw)"
         required: true
@@ -155,6 +160,10 @@ jobs:
           case "${{ inputs.setupapi_archs }}" in *arm64ec*) flag="--convert-stubs" ;; esac
           python3 scripts/patch_setupapi_cfgmgr.py wine-src $flag
 
+      - name: Patch hidclass.sys (antrean input perangkat Valve)
+        if: ${{ inputs.hidclass_queue }}
+        run: python3 scripts/patch_hidclass_queue.py wine-src
+
       - name: Configure Wine
         run: |
           set -eo pipefail
@@ -234,7 +243,8 @@ jobs:
           for arch in $(echo "${{ inputs.setupapi_archs }}" | tr ',' ' '); do
             echo "::group::Build $arch"
             if make -j"$(nproc)" "dlls/setupapi/$arch-windows/setupapi.dll" \
-               && make -j"$(nproc)" "dlls/cfgmgr32/$arch-windows/cfgmgr32.dll"; then
+               && make -j"$(nproc)" "dlls/cfgmgr32/$arch-windows/cfgmgr32.dll" \
+               && { [ "${{ inputs.hidclass_queue }}" != "true" ] || make -j"$(nproc)" "dlls/hidclass.sys/$arch-windows/hidclass.sys"; }; then
               echo "== $arch: OK"
             else
               echo "== $arch: GAGAL"
@@ -260,13 +270,16 @@ jobs:
           for dll in setupapi cfgmgr32; do
             python3 ../scripts/link_arm64x.py --dll "$dll" --build-dir . --out "../arm64x-out/aarch64-windows/$dll.dll"
           done
+          if [ "${{ inputs.hidclass_queue }}" = "true" ]; then
+            python3 ../scripts/link_arm64x.py --dll hidclass --moddir hidclass.sys --ext sys --build-dir . --out "../arm64x-out/aarch64-windows/hidclass.sys"
+          fi
 
       - name: Kumpulkan hasil
         if: ${{ !cancelled() }}
         run: |
           mkdir -p out-setupapi
           cd wine-build
-          find dlls/setupapi dlls/cfgmgr32 \( -name setupapi.dll -o -name cfgmgr32.dll \) -type f | while read -r f; do
+          find dlls/setupapi dlls/cfgmgr32 dlls/hidclass.sys \( -name setupapi.dll -o -name cfgmgr32.dll -o -name hidclass.sys \) -type f | while read -r f; do
             d="../out-setupapi/$(basename "$(dirname "$f")")"
             # bila ARM64X berhasil dibuat, DLL mentah aarch64 (ARM64 murni) dan arm64ec (ARM64EC murni) tidak ikut dipaket
             if [ -d ../arm64x-out/aarch64-windows ]; then
@@ -276,7 +289,7 @@ jobs:
             cp "$f" "$d/"
           done
           cd ..
-          if [ -d arm64x-out/aarch64-windows ]; then mkdir -p out-setupapi/aarch64-windows && cp arm64x-out/aarch64-windows/*.dll out-setupapi/aarch64-windows/; fi
+          if [ -d arm64x-out/aarch64-windows ]; then mkdir -p out-setupapi/aarch64-windows && cp arm64x-out/aarch64-windows/* out-setupapi/aarch64-windows/; fi
           {
             echo "wine_repo=${{ inputs.wine_repo }}"
             echo "wine_ref=${{ inputs.wine_ref }}"
@@ -305,7 +318,7 @@ jobs:
         run: |
           set -eo pipefail
           bad=0
-          for f in $(find out-setupapi -name '*.dll' | sort); do
+          for f in $(find out-setupapi \( -name '*.dll' -o -name '*.sys' \) | sort); do
             dir=$(basename "$(dirname "$f")")
             m=$(llvm-readobj --file-headers "$f" | sed -n 's/.*Machine: \(IMAGE_FILE_MACHINE_[A-Z0-9_]*\).*/\1/p' | head -1)
             case "$dir" in
