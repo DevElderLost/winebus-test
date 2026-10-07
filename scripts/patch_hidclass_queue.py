@@ -62,11 +62,15 @@ def add_clamp(t, max_len):
     return t.replace(key, block, 1)
 
 
-def add_coalesce(t):
+def add_coalesce(t, hid_h=None):
     """Buang laporan Deck lama yang tombolnya sama dengan laporan berikutnya di antrean (lihat docstring, PERBAIKAN v3).
     Gagal keras bila struktur kode tidak dikenali."""
-    m = re.search(r"struct hid_report\s*\{[^}]*\bbuffer\s*\[", t)
-    assert m, "struct hid_report dengan anggota buffer[] tidak ditemukan; periksa device.c"
+    # struct hid_report didefinisikan di hid.h (bukan device.c); cek di keduanya
+    hdr = ""
+    if hid_h is not None and hid_h.exists():
+        hdr = hid_h.read_text(encoding="utf-8")
+    m = re.search(r"struct hid_report\s*\{[^}]*\bbuffer\s*\[", hdr + "\n" + t)
+    assert m, "struct hid_report dengan anggota buffer[] tidak ditemukan di hid.h/device.c; periksa dlls/hidclass.sys"
     dec = re.search(r"^static\s+void\s+(hid_report_(?:decref|release|free|unref)\w*)\(\s*struct\s+hid_report\s*\*", t, re.M)
     assert dec, "fungsi decref untuk struct hid_report tidak ditemukan; periksa device.c"
     anchor = "        report = queue->reports[i];\n        queue->reports[i] = NULL;\n        queue->read_idx = next;\n"
@@ -105,7 +109,7 @@ def main():
         if MARKER_COALESCE in t or a.no_coalesce:
             print("[SKIP] sudah dipatch:", p)
             return
-        t = add_coalesce(t)
+        t = add_coalesce(t, p.with_name("hid.h"))
         p.write_text(t, encoding="utf-8")
         print(f"[OK] {p}: ditambah coalesce laporan Deck duplikat")
         return
@@ -113,7 +117,7 @@ def main():
         # patch v1 sudah ada; hanya tambah pembatas HidD_SetNumInputBuffers
         t = add_clamp(t, max_len)
         if not a.no_coalesce and MARKER_COALESCE not in t:
-            t = add_coalesce(t)
+            t = add_coalesce(t, p.with_name("hid.h"))
         p.write_text(t, encoding="utf-8")
         print(f"[OK] {p}: ditambah pembatas SetNumInputBuffers Valve <= {max_len}")
         return
@@ -164,7 +168,7 @@ static struct hid_queue *hid_queue_create( ULONG length )
 
     t = add_clamp(t, max_len)
     if not a.no_coalesce:
-        t = add_coalesce(t)
+        t = add_coalesce(t, p.with_name("hid.h"))
     p.write_text(t, encoding="utf-8")
     print(f"[OK] {p}: antrean Valve = {a.length} (SetNumInputBuffers dibatasi <= {max_len}), lainnya 32")
 
