@@ -16,13 +16,6 @@ membuka perangkat (log Wine: "HidD_SetNumInputBuffers ... num_buffer 64"), sehin
 ke 64 dan delay justru menjadi ~256 ms. Sekarang permintaan itu juga dibatasi (--max-length, default sama dengan --length)
 khusus perangkat Valve. Perangkat lain tidak berubah (tetap 32 / sesuai permintaan aplikasi).
 
-PERBAIKAN v3 (coalesce): sisi pengirim (fakeinput) sekarang hanya menahan satu laporan di socket, tetapi ring hidclass
-tetap bisa berisi beberapa laporan IDENTIK (penjaga 40 ms + sampel analog/sensor) selagi pembaca SDL lambat, dan SDL selalu
-membaca yang TERLAMA lebih dulu: laporan "lepas tombol" mengantre di belakang laporan "tombol ditekan" yang basi, sehingga
-tombol terasa masih ditekan beberapa ratus ms setelah dilepas. Untuk perangkat Valve (ring kecil + laporan Deck 0x09),
-hid_queue_pop_report sekarang membuang laporan lama yang tombolnya SAMA dengan laporan berikutnya di antrean, jadi yang terbaca
-selalu yang terbaru, sementara laporan yang tombolnya BERBEDA (tekan, lepas) tetap berurutan dan tidak ada ketukan yang hilang.
-
 Opsional (default hidup): TRACE kedalaman ring setiap pembacaan ("ddpatch queue ... remaining N/L"), supaya log +hid
 berikutnya membuktikan sisa antrean mendekati 0.
 
@@ -35,7 +28,6 @@ from pathlib import Path
 
 MARKER = "DDPATCH hidclass valve queue"
 MARKER_CLAMP = "DDPATCH hidclass valve clamp"
-MARKER_COALESCE = "DDPATCH hidclass coalesce"
 
 
 def add_clamp(t, max_len):
@@ -62,40 +54,11 @@ def add_clamp(t, max_len):
     return t.replace(key, block, 1)
 
 
-def add_coalesce(t, hid_h=None):
-    """Buang laporan Deck lama yang tombolnya sama dengan laporan berikutnya di antrean (lihat docstring, PERBAIKAN v3).
-    Gagal keras bila struktur kode tidak dikenali."""
-    # struct hid_report didefinisikan di hid.h (bukan device.c); cek di keduanya
-    hdr = ""
-    if hid_h is not None and hid_h.exists():
-        hdr = hid_h.read_text(encoding="utf-8")
-    m = re.search(r"struct hid_report\s*\{[^}]*\bbuffer\s*\[", hdr + "\n" + t)
-    assert m, "struct hid_report dengan anggota buffer[] tidak ditemukan di hid.h/device.c; periksa dlls/hidclass.sys"
-    dec = re.search(r"^static\s+void\s+(hid_report_(?:decref|release|free|unref)\w*)\(\s*struct\s+hid_report\s*\*", t, re.M)
-    assert dec, "fungsi decref untuk struct hid_report tidak ditemukan; periksa device.c"
-    anchor = "        report = queue->reports[i];\n        queue->reports[i] = NULL;\n        queue->read_idx = next;\n"
-    assert t.count(anchor) == 1, f"jangkar hid_queue_pop_report harus tepat satu, ditemukan {t.count(anchor)}"
-    block = anchor + f"""        /* {MARKER_COALESCE}: buang laporan Deck lama yang tombolnya (byte 8..15) sama dengan laporan berikutnya. */
-        while (queue->length <= 8 && report && report->length == 64 && report->buffer[0] == 0x01 && report->buffer[2] == 0x09
-               && next != queue->write_idx && queue->reports[next] && queue->reports[next]->length == 64
-               && !memcmp( report->buffer + 8, queue->reports[next]->buffer + 8, 8 ))
-        {{
-            {dec.group(1)}( report );
-            report = queue->reports[next];
-            queue->reports[next] = NULL;
-            next = (next + 1) % queue->length;
-            queue->read_idx = next;
-        }}
-"""
-    return t.replace(anchor, block, 1)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("wine_src")
     ap.add_argument("--length", type=int, default=4, help="panjang antrean untuk perangkat Valve (4..32; 2-3 tidak disarankan)")
     ap.add_argument("--max-length", type=int, default=None, help="batas atas HidD_SetNumInputBuffers untuk perangkat Valve (default = --length)")
-    ap.add_argument("--no-coalesce", action="store_true", help="jangan buang laporan Deck lama yang duplikat saat pop")
     ap.add_argument("--no-trace-depth", action="store_true", help="jangan tambah TRACE kedalaman ring")
     a = ap.parse_args()
     if not 4 <= a.length <= 32:
@@ -106,18 +69,11 @@ def main():
     if not 2 <= max_len <= 512:
         sys.exit("[GAGAL] --max-length harus 2..512")
     if MARKER in t and MARKER_CLAMP in t:
-        if MARKER_COALESCE in t or a.no_coalesce:
-            print("[SKIP] sudah dipatch:", p)
-            return
-        t = add_coalesce(t, p.with_name("hid.h"))
-        p.write_text(t, encoding="utf-8")
-        print(f"[OK] {p}: ditambah coalesce laporan Deck duplikat")
+        print("[SKIP] sudah dipatch:", p)
         return
     if MARKER in t:
         # patch v1 sudah ada; hanya tambah pembatas HidD_SetNumInputBuffers
         t = add_clamp(t, max_len)
-        if not a.no_coalesce and MARKER_COALESCE not in t:
-            t = add_coalesce(t, p.with_name("hid.h"))
         p.write_text(t, encoding="utf-8")
         print(f"[OK] {p}: ditambah pembatas SetNumInputBuffers Valve <= {max_len}")
         return
@@ -167,8 +123,6 @@ static struct hid_queue *hid_queue_create( ULONG length )
     t = t.replace(old_pop, new_pop, 1)
 
     t = add_clamp(t, max_len)
-    if not a.no_coalesce:
-        t = add_coalesce(t, p.with_name("hid.h"))
     p.write_text(t, encoding="utf-8")
     print(f"[OK] {p}: antrean Valve = {a.length} (SetNumInputBuffers dibatasi <= {max_len}), lainnya 32")
 
