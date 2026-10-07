@@ -32,9 +32,9 @@ def run(cmd, cwd, check=True, shell=False):
     return p
 
 
-def capture_link(build, dll, arch):
+def capture_link(build, dll, arch, moddir, ext):
     """Jalankan ulang link winegcc dengan -v untuk membaca perintah winebuild + clang yang sebenarnya dipakai."""
-    target = f"dlls/{dll}/{arch}-windows/{dll}.dll"
+    target = f"dlls/{moddir}/{arch}-windows/{dll}.{ext}"
     out = build / target
     run(["make", "-j2", target], build)  # pastikan objek + import lib dependensi sudah ada
     if out.exists():
@@ -53,7 +53,9 @@ def capture_link(build, dll, arch):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dll", required=True, help="nama modul tanpa .dll (setupapi, cfgmgr32)")
+    ap.add_argument("--dll", required=True, help="nama modul tanpa ekstensi (setupapi, cfgmgr32, hidclass)")
+    ap.add_argument("--moddir", help="folder modul di dlls/ bila beda dari nama (mis. hidclass.sys)")
+    ap.add_argument("--ext", default="dll", help="ekstensi modul (dll atau sys)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--build-dir", default=".")
     ap.add_argument("--keep-debug", action="store_true", help="jangan strip debug DWARF")
@@ -65,7 +67,7 @@ def main():
 
     inputs = {}
     for arch in ARCHS:
-        wb, link = capture_link(build, a.dll, arch)
+        wb, link = capture_link(build, a.dll, arch, a.moddir or a.dll, a.ext)
         spec_o = tmp / f"spec_{arch}.o"
         wb = re.sub(r"-o \S+", f"-o {spec_o}", wb, count=1)
         if arch == "arm64ec":
@@ -75,7 +77,8 @@ def main():
         libs = [x for x in link if x.endswith(".a")]
         delay = [x[4:] for x in link if x.startswith("-Wl,-delayload")]
         entry = next((x[4:] for x in link if x.startswith("-Wl,-entry:")), "-entry:DllMainCRTStartup")
-        inputs[arch] = dict(spec=str(spec_o), objs=objs, libs=libs, delay=delay, entry=entry)
+        subsys = next((x[4:] for x in link if x.startswith("-Wl,-subsystem:")), "-subsystem:console")
+        inputs[arch] = dict(spec=str(spec_o), objs=objs, libs=libs, delay=delay, entry=entry, subsys=subsys)
         print(f"[{arch}] {len(objs)} objek, {len(libs)} lib, delayload={len(delay)}")
 
     # lld ARM64X butuh _load_config_used versi native (versi ARM64EC dari libwinecrt0); CHPE metadata diisi lld.
@@ -87,7 +90,7 @@ def main():
 
     n, e = inputs["aarch64"], inputs["arm64ec"]
     cmd = ["lld-link", "-machine:arm64x", "-dll", f"-out:{out}", f"-implib:{tmp / (a.dll + '.lib')}",
-           "-filealign:0x1000", "-kill-at", "-nodefaultlib", "-subsystem:console", "-debug:dwarf", n["entry"],
+           "-filealign:0x1000", "-kill-at", "-nodefaultlib", n["subsys"], "-debug:dwarf", n["entry"],
            n["spec"], str(loadcfg), *n["objs"], e["spec"], *e["objs"], *n["libs"], *e["libs"], *n["delay"]]
     run(cmd, build)
     if not a.keep_debug:
