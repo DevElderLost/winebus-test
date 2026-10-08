@@ -162,7 +162,17 @@ jobs:
 
       - name: Patch hidclass.sys (antrean input perangkat Valve)
         if: ${{ inputs.hidclass_queue }}
-        run: python3 scripts/patch_hidclass_queue.py wine-src
+        run: |
+          # kode keluar 3 = struktur device.c versi Wine/Proton ini tidak dikenali (file tidak diubah): hidclass dilewati,
+          # setupapi/cfgmgr32 tetap dibuild. Galat lain tetap menggagalkan job.
+          rc=0
+          python3 scripts/patch_hidclass_queue.py wine-src || rc=$?
+          if [ "$rc" -eq 3 ]; then
+            echo "::warning::patch hidclass tidak cocok dengan source Wine ini; hidclass.sys dilewati (setupapi/cfgmgr32 tetap dibuild)"
+            echo "HIDCLASS_SKIP=1" >> "$GITHUB_ENV"
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
 
       - name: Configure Wine
         run: |
@@ -254,6 +264,9 @@ jobs:
           # Build per arsitektur: kegagalan satu arsitektur (mis. arm64ec) tidak menutupi hasil arsitektur lain.
           # setupapi dulu (cfgmgr32 meneruskan ekspor ke setupapi), lalu cfgmgr32.
           failed=""
+          hid_failed=""
+          want_hid=0
+          if [ "${{ inputs.hidclass_queue }}" = "true" ] && [ "${HIDCLASS_SKIP:-0}" != 1 ]; then want_hid=1; fi
           for arch in $(echo "${{ inputs.setupapi_archs }}" | tr ',' ' '); do
             echo "::group::Build $arch"
             if [ "$arch" = arm64ec ] && ! grep -qE '^dlls/setupapi/arm64ec-windows/setupapi\.dll:' Makefile; then
@@ -262,9 +275,13 @@ jobs:
               continue
             fi
             if make -j"$(nproc)" "dlls/setupapi/$arch-windows/setupapi.dll" \
-               && make -j"$(nproc)" "dlls/cfgmgr32/$arch-windows/cfgmgr32.dll" \
-               && { [ "${{ inputs.hidclass_queue }}" != "true" ] || make -j"$(nproc)" "dlls/hidclass.sys/$arch-windows/hidclass.sys"; }; then
+               && make -j"$(nproc)" "dlls/cfgmgr32/$arch-windows/cfgmgr32.dll"; then
               echo "== $arch: OK"
+              # hidclass.sys opsional: kegagalannya (mis. nama struktur Wine berbeda) tidak menggagalkan setupapi/cfgmgr32
+              if [ "$want_hid" = 1 ] && ! make -j"$(nproc)" "dlls/hidclass.sys/$arch-windows/hidclass.sys"; then
+                echo "::warning::hidclass.sys $arch gagal dibuild"
+                hid_failed="$hid_failed $arch"
+              fi
             else
               echo "== $arch: GAGAL"
               echo "::warning::build PE $arch gagal (lihat grup 'Build $arch'); arsitektur lain tetap diproses"
@@ -273,6 +290,12 @@ jobs:
             echo "::endgroup::"
           done
           echo "SETUPAPI_FAILED=${failed# }" >> "$GITHUB_ENV"
+          echo "HIDCLASS_FAILED=${hid_failed# }" >> "$GITHUB_ENV"
+          if [ -n "$hid_failed" ]; then
+            # jangan sisakan hidclass.sys parsial (hanya sebagian arsitektur): buang semuanya
+            echo "::warning::hidclass.sys dilewati karena gagal build di:$hid_failed (setupapi/cfgmgr32 tetap diproses)"
+            find dlls/hidclass.sys -name hidclass.sys -type f -delete 2>/dev/null || true
+          fi
           test -n "$(find dlls/setupapi -name setupapi.dll)" || { echo "tidak ada arsitektur yang berhasil dibuild"; exit 1; }
           # Arsitektur yang gagal TIDAK boleh lolos diam-diam: hasil parsial (mis. hanya aarch64) mudah salah dipasang
           # sebagai ARM64EC. Job tetap gagal; langkah kumpul/upload di bawah tetap jalan agar log/artefak parsial bisa diperiksa.
@@ -290,7 +313,7 @@ jobs:
           for dll in setupapi cfgmgr32; do
             python3 ../scripts/link_arm64x.py --dll "$dll" --build-dir . --out "../arm64x-out/aarch64-windows/$dll.dll"
           done
-          if [ "${{ inputs.hidclass_queue }}" = "true" ]; then
+          if [ "${{ inputs.hidclass_queue }}" = "true" ] && [ "${HIDCLASS_SKIP:-0}" != 1 ] && [ -z "${HIDCLASS_FAILED:-}" ]; then
             python3 ../scripts/link_arm64x.py --dll hidclass --moddir hidclass.sys --ext sys --build-dir . --out "../arm64x-out/aarch64-windows/hidclass.sys"
           fi
 
@@ -310,7 +333,12 @@ jobs:
           done
           cd ..
           if [ -d arm64x-out/aarch64-windows ]; then mkdir -p out-setupapi/aarch64-windows && cp arm64x-out/aarch64-windows/* out-setupapi/aarch64-windows/; fi
+          if [ "${{ inputs.hidclass_queue }}" != "true" ]; then hid="nonaktif"
+          elif [ "${HIDCLASS_SKIP:-0}" = 1 ]; then hid="dilewati (patch tidak cocok dengan source Wine ini)"
+          elif [ -n "${HIDCLASS_FAILED:-}" ]; then hid="dilewati (gagal build: ${HIDCLASS_FAILED})"
+          else hid="ikut"; fi
           {
+            echo "hidclass=$hid"
             echo "wine_repo=${{ inputs.wine_repo }}"
             echo "wine_ref=${{ inputs.wine_ref }}"
             echo "wine_commit=$WINE_COMMIT"
