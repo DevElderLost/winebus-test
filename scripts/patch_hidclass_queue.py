@@ -38,6 +38,7 @@ from pathlib import Path
 
 MARKER = "DDPATCH hidclass valve queue"
 MARKER_CLAMP = "DDPATCH hidclass valve clamp"
+MARKER_RAWIN = "DDPATCH hidclass valve rawinput switch"
 
 # pemakaian field 'information' (HID_COLLECTION_INFORMATION) lewat pointer ekstensi, mis. ext->u.pdo.information
 INFO_RE = re.compile(r"\b(\w+)\s*->\s*((?:\w+\s*\.\s*)*)information\b")
@@ -98,6 +99,42 @@ def add_clamp(t, max_len):
             }}
         }}"""
     return t.replace(key, block, 1)
+
+
+def add_rawinput_switch(t):
+    """Saklar runtime untuk Proton/Wine 9.x: setiap laporan HID dikirim dulu ke wineserver sebagai pesan WM_INPUT
+    (__wine_send_input, sinkron) SEBELUM masuk antrean baca aplikasi. Di Wine 10+ jalur ini diganti (NtUserSendHardwareInput +
+    struct hid_packet) yang tidak ada di win32u/server 9.x. Dengan env DD_HID_VALVE_NORAWINPUT=1 (dibaca sekali per proses)
+    pengiriman rawinput DILEWATI khusus perangkat Valve (0x28de); SDL/HIDAPI membaca lewat ReadFile, bukan WM_INPUT. Default
+    (env tidak diatur) perilaku TIDAK berubah. Kembali (teks, diterapkan); bila jangkar tidak ada (Wine 10+) teks tidak diubah."""
+    anchor = "if (IsEqualGUID( ext->class_guid, &GUID_DEVINTERFACE_HID ) && !steam_overlay_open)"
+    if t.count(anchor) != 1 or "__wine_send_input" not in t:
+        return t, False
+    idx = t.index(anchor)
+    var, vid = vendor_expr(t, idx, "saklar rawinput Valve")
+    helper = f"""/* {MARKER_RAWIN}: DD_HID_VALVE_NORAWINPUT=1 melewati pengiriman WM_INPUT (wineserver) untuk perangkat Valve. */
+static BOOL dd_valve_skip_rawinput( USHORT vendor_id )
+{{
+    static volatile LONG state; /* 0 = belum dibaca, 1 = lewati, 2 = jangan lewati */
+    LONG s = state;
+    if (vendor_id != 0x28de) return FALSE;
+    if (!s)
+    {{
+        WCHAR buf[4];
+        DWORD n = GetEnvironmentVariableW( L"DD_HID_VALVE_NORAWINPUT", buf, sizeof(buf) / sizeof(buf[0]) );
+        s = (n == 1 && buf[0] == L'1') ? 1 : 2;
+        InterlockedExchange( &state, s );
+    }}
+    return s == 1;
+}}
+
+"""
+    # sisipkan helper sebelum fungsi yang memuat jangkar
+    a = t.rfind("\nstatic void hid_device_queue_input", 0, idx)
+    need(a >= 0, "awal hid_device_queue_input tidak ditemukan untuk menyisipkan helper")
+    t = t[:a + 1] + helper + t[a + 1:]
+    new_anchor = f"if (IsEqualGUID( ext->class_guid, &GUID_DEVINTERFACE_HID ) && !steam_overlay_open && !dd_valve_skip_rawinput( {var} ? {vid} : 0 ))"
+    return t.replace(anchor, new_anchor, 1), True
 
 
 def apply_patch(t, a):
@@ -162,6 +199,7 @@ def main():
     ap.add_argument("wine_src")
     ap.add_argument("--length", type=int, default=4, help="panjang antrean untuk perangkat Valve (4..32; 2-3 tidak disarankan)")
     ap.add_argument("--max-length", type=int, default=None, help="batas atas HidD_SetNumInputBuffers untuk perangkat Valve (default = --length)")
+    ap.add_argument("--no-rawinput-switch", action="store_true", help="jangan tambah saklar env DD_HID_VALVE_NORAWINPUT (Wine 9.x)")
     ap.add_argument("--no-trace-depth", action="store_true", help="jangan tambah TRACE kedalaman ring")
     a = ap.parse_args()
     if not 4 <= a.length <= 32:
@@ -174,15 +212,28 @@ def main():
         print(f"[TIDAK COCOK] tidak ditemukan: {p}")
         return 3
     t = p.read_text(encoding="utf-8")
+    notes = []
     if MARKER in t and MARKER_CLAMP in t:
+        new = t  # antrean + pembatas sudah ada; mungkin hanya saklar rawinput yang belum
+    else:
+        try:
+            new, msg = apply_patch(t, a)  # semua perubahan di memori; file baru ditulis hanya bila semuanya berhasil
+        except Incompatible as e:
+            print(f"[TIDAK COCOK] {p}: {e}")
+            print("  device.c di versi Wine/Proton ini berbeda dari yang dikenali patch; file TIDAK diubah.")
+            return 3
+        notes.append(msg)
+    if not a.no_rawinput_switch and MARKER_RAWIN not in new:
+        try:
+            new, applied = add_rawinput_switch(new)
+        except Incompatible as e:
+            print(f"[INFO] saklar rawinput dilewati: {e}")
+            applied = False
+        notes.append("saklar env DD_HID_VALVE_NORAWINPUT ditambah" if applied else "saklar rawinput tidak berlaku di versi ini (dilewati)")
+    if new == t:
         print("[SKIP] sudah dipatch:", p)
         return 0
-    try:
-        new, msg = apply_patch(t, a)  # semua perubahan di memori; file baru ditulis hanya bila semuanya berhasil
-    except Incompatible as e:
-        print(f"[TIDAK COCOK] {p}: {e}")
-        print("  device.c di versi Wine/Proton ini berbeda dari yang dikenali patch; file TIDAK diubah.")
-        return 3
+    msg = "; ".join(notes)
     p.write_text(new, encoding="utf-8")
     print(f"[OK] {p}: {msg}")
     return 0
